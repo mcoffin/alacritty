@@ -140,7 +140,7 @@ impl Display {
         let mut window = Window::new(&options.title)?;
 
         // get window properties for initializing the other subsystems
-        let mut viewport_size = window.inner_size_pixels()
+        let mut viewport_size = window.inner_size()
             .expect("glutin returns window size");
         let dpr = window.hidpi_factor();
 

@@ -252,6 +252,7 @@ impl<N: Notify> Processor<N> {
         resize_tx: &mpsc::Sender<(u32, u32)>,
         hide_cursor: &mut bool,
         window_is_focused: &mut bool,
+        application_is_suspended: &mut bool,
     ) {
         match event {
             // Pass on device events
@@ -302,7 +303,7 @@ impl<N: Notify> Processor<N> {
                         processor.mouse_input(state, button);
                         processor.ctx.terminal.dirty = true;
                     },
-                    MouseMoved { position: (x, y), .. } => {
+                    CursorMoved { position: (x, y), .. } => {
                         let x = x as i32;
                         let y = y as i32;
                         let x = limit(x, 0, processor.ctx.size_info.width as i32);
@@ -339,7 +340,10 @@ impl<N: Notify> Processor<N> {
             },
             Event::Awakened => {
                 processor.ctx.terminal.dirty = true;
-            }
+            },
+            Event::Suspended(suspended) => {
+                *application_is_suspended = suspended;
+            },
         }
     }
 
@@ -400,6 +404,7 @@ impl<N: Notify> Processor<N> {
             };
 
             let mut window_is_focused = window.is_focused;
+            let mut application_is_suspended = Default::default(); // TODO: store this somewhere useful
 
             // Scope needed to that hide_cursor isn't borrowed after the scope
             // ends.
@@ -416,6 +421,7 @@ impl<N: Notify> Processor<N> {
                         resize_tx,
                         hide_cursor,
                         &mut window_is_focused,
+                        &mut application_is_suspended,
                     );
                 };
 
