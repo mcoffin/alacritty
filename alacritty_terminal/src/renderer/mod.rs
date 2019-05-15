@@ -36,6 +36,7 @@ use crate::term::color::Rgb;
 use crate::term::{self, cell, RenderableCell, RenderableCellContent};
 
 pub mod rects;
+pub mod generic;
 
 // Shader paths for live reload
 static TEXT_SHADER_F_PATH: &'static str =
@@ -111,7 +112,7 @@ impl From<ShaderCreationError> for Error {
 ///
 /// Uniforms are prefixed with "u", and vertex attributes are prefixed with "a".
 #[derive(Debug)]
-pub struct TextShaderProgram {
+struct TextShaderProgram {
     // Program id
     id: GLuint,
 
@@ -131,7 +132,7 @@ pub struct TextShaderProgram {
 ///
 /// Uniforms are prefixed with "u"
 #[derive(Debug)]
-pub struct RectShaderProgram {
+struct RectShaderProgram {
     // Program id
     id: GLuint,
     /// Rectangle color
@@ -423,7 +424,7 @@ pub struct PackedVertex {
 }
 
 #[derive(Debug, Default)]
-pub struct Batch {
+struct Batch {
     tex: GLuint,
     instances: Vec<InstanceData>,
 }
@@ -498,6 +499,161 @@ impl Batch {
 /// Maximum items to be drawn in a batch.
 const BATCH_MAX: usize = 0x1_0000;
 const ATLAS_SIZE: i32 = 1024;
+
+impl<'a> generic::RenderContext<'a> for &'a mut QuadRenderer {
+    type Renderer = RenderApi<'a>;
+    type Loader = LoaderApi<'a>;
+
+    fn resize(self, size: PhysicalSize, padding_x: f32, padding_y: f32) {
+        let (width, height): (u32, u32) = size.into();
+
+        // viewport
+        unsafe {
+            let width = width as i32;
+            let height = height as i32;
+            let padding_x = padding_x as i32;
+            let padding_y = padding_y as i32;
+            gl::Viewport(padding_x, padding_y, width - 2 * padding_x, height - 2 * padding_y);
+
+            // update projection
+            gl::UseProgram(self.program.id);
+            self.program.update_projection(
+                width as f32,
+                height as f32,
+                padding_x as f32,
+                padding_y as f32,
+            );
+            gl::UseProgram(0);
+        }
+    }
+
+    // Draw all rectangles simultaneously to prevent excessive program swaps
+    fn draw_rects(
+        self,
+        config: &Config,
+        props: &term::SizeInfo,
+        visual_bell_intensity: f64,
+        cell_line_rects: Rects,
+    ) {
+        // Swap to rectangle rendering program
+        unsafe {
+            // Swap program
+            gl::UseProgram(self.rect_program.id);
+
+            // Remove padding from viewport
+            gl::Viewport(0, 0, props.width as i32, props.height as i32);
+
+            // Change blending strategy
+            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+
+            // Setup data and buffers
+            gl::BindVertexArray(self.rect_vao);
+            gl::BindBuffer(gl::ARRAY_BUFFER, self.rect_vbo);
+
+            // Position
+            gl::VertexAttribPointer(
+                0,
+                2,
+                gl::FLOAT,
+                gl::FALSE,
+                (size_of::<f32>() * 2) as _,
+                ptr::null(),
+            );
+            gl::EnableVertexAttribArray(0);
+        }
+
+        // Draw visual bell
+        let color = config.visual_bell.color;
+        let rect = Rect::new(0., 0., props.width, props.height);
+        self.render_rect(&rect, color, visual_bell_intensity as f32, props);
+
+        // Draw underlines and strikeouts
+        for cell_line_rect in cell_line_rects.rects() {
+            self.render_rect(&cell_line_rect.0, cell_line_rect.1, 255., props);
+        }
+
+        // Deactivate rectangle program again
+        unsafe {
+            // Reset blending strategy
+            gl::BlendFunc(gl::SRC1_COLOR, gl::ONE_MINUS_SRC1_COLOR);
+
+            // Reset data and buffers
+            gl::BindBuffer(gl::ARRAY_BUFFER, 0);
+            gl::BindVertexArray(0);
+
+            let padding_x = props.padding_x as i32;
+            let padding_y = props.padding_y as i32;
+            let width = props.width as i32;
+            let height = props.height as i32;
+            gl::Viewport(padding_x, padding_y, width - 2 * padding_x, height - 2 * padding_y);
+
+            // Disable program
+            gl::UseProgram(0);
+        }
+    }
+
+    fn with_api<'config, F, T>(
+        self,
+        config: &'config Config,
+        props: &term::SizeInfo,
+        func: F
+    ) -> T where
+        'config: 'a,
+        F: FnOnce(Self::Renderer) -> T,
+    {
+        // Flush message queue
+        if let Ok(Msg::ShaderReload) = self.rx.try_recv() {
+            self.reload_shaders(props);
+        }
+        while let Ok(_) = self.rx.try_recv() {}
+
+        unsafe {
+            gl::UseProgram(self.program.id);
+            self.program.set_term_uniforms(props);
+
+            gl::BindVertexArray(self.vao);
+            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, self.ebo);
+            gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo_instance);
+            gl::ActiveTexture(gl::TEXTURE0);
+        }
+
+        let res = func(RenderApi {
+            active_tex: &mut self.active_tex,
+            batch: &mut self.batch,
+            atlas: &mut self.atlas,
+            current_atlas: &mut self.current_atlas,
+            program: &mut self.program,
+            config,
+        });
+
+        unsafe {
+            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, 0);
+            gl::BindBuffer(gl::ARRAY_BUFFER, 0);
+            gl::BindVertexArray(0);
+
+            gl::UseProgram(0);
+        }
+
+        res
+    }
+
+    fn with_loader<F, T>(
+        self,
+        func: F
+    ) -> T where
+        F: FnOnce(Self::Loader) -> T,
+    {
+        unsafe {
+            gl::ActiveTexture(gl::TEXTURE0);
+        }
+
+        func(LoaderApi {
+            active_tex: &mut self.active_tex,
+            atlas: &mut self.atlas,
+            current_atlas: &mut self.current_atlas,
+        })
+    }
+}
 
 impl QuadRenderer {
     pub fn new() -> Result<QuadRenderer, Error> {
@@ -677,126 +833,6 @@ impl QuadRenderer {
         Ok(renderer)
     }
 
-    // Draw all rectangles simultaneously to prevent excessive program swaps
-    pub fn draw_rects(
-        &mut self,
-        config: &Config,
-        props: &term::SizeInfo,
-        visual_bell_intensity: f64,
-        cell_line_rects: Rects,
-    ) {
-        // Swap to rectangle rendering program
-        unsafe {
-            // Swap program
-            gl::UseProgram(self.rect_program.id);
-
-            // Remove padding from viewport
-            gl::Viewport(0, 0, props.width as i32, props.height as i32);
-
-            // Change blending strategy
-            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-
-            // Setup data and buffers
-            gl::BindVertexArray(self.rect_vao);
-            gl::BindBuffer(gl::ARRAY_BUFFER, self.rect_vbo);
-
-            // Position
-            gl::VertexAttribPointer(
-                0,
-                2,
-                gl::FLOAT,
-                gl::FALSE,
-                (size_of::<f32>() * 2) as _,
-                ptr::null(),
-            );
-            gl::EnableVertexAttribArray(0);
-        }
-
-        // Draw visual bell
-        let color = config.visual_bell.color;
-        let rect = Rect::new(0., 0., props.width, props.height);
-        self.render_rect(&rect, color, visual_bell_intensity as f32, props);
-
-        // Draw underlines and strikeouts
-        for cell_line_rect in cell_line_rects.rects() {
-            self.render_rect(&cell_line_rect.0, cell_line_rect.1, 255., props);
-        }
-
-        // Deactivate rectangle program again
-        unsafe {
-            // Reset blending strategy
-            gl::BlendFunc(gl::SRC1_COLOR, gl::ONE_MINUS_SRC1_COLOR);
-
-            // Reset data and buffers
-            gl::BindBuffer(gl::ARRAY_BUFFER, 0);
-            gl::BindVertexArray(0);
-
-            let padding_x = props.padding_x as i32;
-            let padding_y = props.padding_y as i32;
-            let width = props.width as i32;
-            let height = props.height as i32;
-            gl::Viewport(padding_x, padding_y, width - 2 * padding_x, height - 2 * padding_y);
-
-            // Disable program
-            gl::UseProgram(0);
-        }
-    }
-
-    pub fn with_api<F, T>(&mut self, config: &Config, props: &term::SizeInfo, func: F) -> T
-    where
-        F: FnOnce(RenderApi<'_>) -> T,
-    {
-        // Flush message queue
-        if let Ok(Msg::ShaderReload) = self.rx.try_recv() {
-            self.reload_shaders(props);
-        }
-        while let Ok(_) = self.rx.try_recv() {}
-
-        unsafe {
-            gl::UseProgram(self.program.id);
-            self.program.set_term_uniforms(props);
-
-            gl::BindVertexArray(self.vao);
-            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, self.ebo);
-            gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo_instance);
-            gl::ActiveTexture(gl::TEXTURE0);
-        }
-
-        let res = func(RenderApi {
-            active_tex: &mut self.active_tex,
-            batch: &mut self.batch,
-            atlas: &mut self.atlas,
-            current_atlas: &mut self.current_atlas,
-            program: &mut self.program,
-            config,
-        });
-
-        unsafe {
-            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, 0);
-            gl::BindBuffer(gl::ARRAY_BUFFER, 0);
-            gl::BindVertexArray(0);
-
-            gl::UseProgram(0);
-        }
-
-        res
-    }
-
-    pub fn with_loader<F, T>(&mut self, func: F) -> T
-    where
-        F: FnOnce(LoaderApi<'_>) -> T,
-    {
-        unsafe {
-            gl::ActiveTexture(gl::TEXTURE0);
-        }
-
-        func(LoaderApi {
-            active_tex: &mut self.active_tex,
-            atlas: &mut self.atlas,
-            current_atlas: &mut self.current_atlas,
-        })
-    }
-
     pub fn reload_shaders(&mut self, props: &term::SizeInfo) {
         info!("Reloading shaders...");
         let result = (TextShaderProgram::new(), RectShaderProgram::new());
@@ -825,29 +861,6 @@ impl QuadRenderer {
         self.active_tex = 0;
         self.program = program;
         self.rect_program = rect_program;
-    }
-
-    pub fn resize(&mut self, size: PhysicalSize, padding_x: f32, padding_y: f32) {
-        let (width, height): (u32, u32) = size.into();
-
-        // viewport
-        unsafe {
-            let width = width as i32;
-            let height = height as i32;
-            let padding_x = padding_x as i32;
-            let padding_y = padding_y as i32;
-            gl::Viewport(padding_x, padding_y, width - 2 * padding_x, height - 2 * padding_y);
-
-            // update projection
-            gl::UseProgram(self.program.id);
-            self.program.update_projection(
-                width as f32,
-                height as f32,
-                padding_x as f32,
-                padding_y as f32,
-            );
-            gl::UseProgram(0);
-        }
     }
 
     // Render a rectangle
@@ -885,6 +898,29 @@ impl QuadRenderer {
             // Draw the rectangle
             gl::DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_INT, ptr::null());
         }
+    }
+}
+
+impl<'a> generic::Renderer for RenderApi<'a> {
+    fn clear(&self, color: Rgb) {
+        RenderApi::clear(self, color)
+    }
+    fn render_string(
+        &mut self,
+        string: &str,
+        line: Line,
+        glyph_cache: &mut GlyphCache,
+        color: Option<Rgb>
+    ) {
+        RenderApi::render_string(self, string, line, glyph_cache, color)
+    }
+
+    fn render_cell(
+        &mut self,
+        cell: RenderableCell,
+        glyph_cache: &mut GlyphCache
+    ) {
+        RenderApi::render_cell(self, cell, glyph_cache)
     }
 }
 

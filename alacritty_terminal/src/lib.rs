@@ -26,6 +26,9 @@ extern crate serde_derive;
 #[macro_use]
 extern crate objc;
 
+#[cfg(feature = "vulkan")]
+extern crate vulkano;
+
 #[macro_use]
 pub mod macros;
 pub mod ansi;
@@ -43,6 +46,7 @@ pub mod message_bar;
 pub mod meter;
 pub mod panic;
 pub mod renderer;
+#[cfg(feature = "vulkan")] pub mod vk_renderer;
 pub mod selection;
 pub mod sync;
 pub mod term;

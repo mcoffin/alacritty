@@ -33,6 +33,8 @@ terminfo = "0.6.1"
 url = "1.7.1"
 crossbeam-channel = "0.3.8"
 clipboard = { git = "https://github.com/chrisduerr/rust-clipboard" }
+vulkano = "0.11"
+vulkano-shaders = "0.11"
 
 [target.'cfg(unix)'.dependencies]
 nix = "0.13"
@@ -62,6 +64,7 @@ default = []
 live-shader-reload = []
 nightly = []
 bench = []
+vulkan = []
 
 [build-dependencies]
 gl_generator = "0.11.0"

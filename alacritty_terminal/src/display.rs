@@ -28,6 +28,7 @@ use crate::index::Line;
 use crate::message_bar::Message;
 use crate::meter::Meter;
 use crate::renderer::rects::{Rect, Rects};
+use crate::renderer::generic::{Renderer, RenderContext};
 use crate::renderer::{self, GlyphCache, QuadRenderer};
 use crate::sync::FairMutex;
 use crate::term::color::Rgb;
@@ -94,9 +95,9 @@ impl From<renderer::Error> for Error {
 }
 
 /// The display wraps a window, font rasterizer, and GPU renderer
-pub struct Display {
+pub struct Display<R> where for<'a> &'a mut R: RenderContext<'a> {
     window: Window,
-    renderer: QuadRenderer,
+    renderer: R,
     glyph_cache: GlyphCache,
     render_timer: bool,
     rx: mpsc::Receiver<PhysicalSize>,
@@ -121,7 +122,7 @@ impl Notifier {
     }
 }
 
-impl Display {
+impl<R> Display<R> where for<'a> &'a mut R: RenderContext<'a> {
     pub fn notifier(&self) -> Notifier {
         Notifier(self.window.create_window_proxy())
     }
@@ -135,7 +136,7 @@ impl Display {
         &self.size_info
     }
 
-    pub fn new(config: &Config) -> Result<Display, Error> {
+    pub fn new(config: &Config) -> Result<Display<QuadRenderer>, Error> {
         // Extract some properties from config
         let render_timer = config.render_timer();
 
@@ -224,7 +225,7 @@ impl Display {
             api.clear(background_color);
         });
 
-        Ok(Display {
+        Ok(Display::<QuadRenderer> {
             window,
             renderer,
             glyph_cache,
