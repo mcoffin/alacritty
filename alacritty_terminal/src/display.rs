@@ -18,6 +18,7 @@ use std::f64;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 use std::ffi::c_void;
 use std::sync::mpsc;
+use std::borrow::BorrowMut;
 
 use glutin::dpi::{PhysicalPosition, PhysicalSize};
 use glutin::EventsLoop;
@@ -28,8 +29,8 @@ use crate::index::Line;
 use crate::message_bar::Message;
 use crate::meter::Meter;
 use crate::renderer::rects::{Rect, Rects};
-use crate::renderer::generic::{Renderer, RenderContext};
-use crate::renderer::{self, GlyphCache, QuadRenderer};
+use crate::renderer::generic::{BaseRenderContext, Renderer, RenderContext};
+use crate::renderer::{self, GlyphCache, QuadRenderer, LoadGlyph};
 use crate::sync::FairMutex;
 use crate::term::color::Rgb;
 use crate::term::{RenderableCell, SizeInfo, Term};
@@ -95,7 +96,7 @@ impl From<renderer::Error> for Error {
 }
 
 /// The display wraps a window, font rasterizer, and GPU renderer
-pub struct Display<R> where for<'a> &'a mut R: RenderContext<'a> {
+pub struct Display<R> where for<'a> R: RenderContext<'a> {
     window: Window,
     renderer: R,
     glyph_cache: GlyphCache,
@@ -122,7 +123,11 @@ impl Notifier {
     }
 }
 
-impl<R> Display<R> where for<'a> &'a mut R: RenderContext<'a> {
+impl<R> Display<R> where
+    for<'a> R: RenderContext<'a>,
+    for<'a> <R as RenderContext<'a>>::Renderer: Renderer,
+    for<'a> <R as RenderContext<'a>>::Loader: LoadGlyph,
+{
     pub fn notifier(&self) -> Notifier {
         Notifier(self.window.create_window_proxy())
     }
