@@ -56,22 +56,26 @@ pub trait RenderContext<'a>: BaseRenderContext {
         let api = self.borrow_loader();
         func(api)
     }
-}
 
-pub trait DynamicRenderContext: BaseRenderContext {
     fn with_api_dynamic<F, T>(
-        &mut self,
-        config: &Config,
+        &'a mut self,
+        config: &'a Config,
         props: &term::SizeInfo,
         func: F
     ) -> T where
-        F: FnOnce(&mut dyn Renderer) -> T;
+        F: FnOnce(&mut dyn Renderer) -> T,
+    {
+        self.with_api(config, props, |mut api| func(&mut api))
+    }
 
     fn with_loader_dynamic<F, T>(
-        &mut self,
+        &'a mut self,
         func: F
     ) -> T where
-        F: FnOnce(&mut dyn LoadGlyph) -> T;
+        F: FnOnce(&mut dyn LoadGlyph) -> T,
+    {
+        self.with_loader(|mut api| func(&mut api))
+    }
 }
 
 //impl<R> DynamicRenderContext for R where

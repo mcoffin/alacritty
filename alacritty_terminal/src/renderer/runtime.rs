@@ -131,12 +131,10 @@ impl<'a> generic::RenderContext<'a> for RuntimeQuadRenderer {
             &mut RuntimeQuadRenderer::Vulkan(ref mut r) => RuntimeLoader::Vulkan(r.borrow_loader())
         }
     }
-}
 
-impl generic::DynamicRenderContext for RuntimeQuadRenderer {
     fn with_api_dynamic<F, T>(
-        &mut self,
-        config: &Config,
+        &'a mut self,
+        config: &'a Config,
         props: &term::SizeInfo,
         func: F
     ) -> T where
@@ -147,7 +145,7 @@ impl generic::DynamicRenderContext for RuntimeQuadRenderer {
     }
 
     fn with_loader_dynamic<F, T>(
-        &mut self,
+        &'a mut self,
         func: F
     ) -> T where
         F: FnOnce(&mut dyn LoadGlyph) -> T,

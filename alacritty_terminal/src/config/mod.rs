@@ -29,6 +29,7 @@ mod scrolling;
 mod test;
 mod visual_bell;
 mod window;
+mod renderer;
 
 use crate::ansi::CursorStyle;
 use crate::input::{Binding, KeyBinding, MouseBinding};
@@ -42,6 +43,7 @@ pub use crate::config::mouse::{ClickHandler, Mouse};
 pub use crate::config::scrolling::Scrolling;
 pub use crate::config::visual_bell::{VisualBellAnimation, VisualBellConfig};
 pub use crate::config::window::{Decorations, Dimensions, StartupMode, WindowConfig};
+pub use crate::config::renderer::RendererApi;
 
 pub static DEFAULT_ALACRITTY_CONFIG: &'static str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../alacritty.yml"));
@@ -141,6 +143,10 @@ pub struct Config {
     #[serde(default, deserialize_with = "failure_default")]
     pub debug: Debug,
 
+    /// Which renderer api to use
+    #[serde(default)]
+    renderer_api: RendererApi,
+
     // TODO: DEPRECATED
     #[serde(default, deserialize_with = "failure_default")]
     pub render_timer: Option<bool>,
@@ -164,6 +170,11 @@ impl Config {
     #[inline]
     pub fn draw_bold_text_with_bright_colors(&self) -> bool {
         self.draw_bold_text_with_bright_colors.0
+    }
+
+    #[inline]
+    pub fn renderer_api(&self) -> RendererApi {
+        self.renderer_api
     }
 
     /// Should show render timer

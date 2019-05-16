@@ -29,7 +29,7 @@ use crate::index::Line;
 use crate::message_bar::Message;
 use crate::meter::Meter;
 use crate::renderer::rects::{Rect, Rects};
-use crate::renderer::generic::{BaseRenderContext, DynamicRenderContext, Renderer, RenderContext};
+use crate::renderer::generic::{BaseRenderContext, Renderer, RenderContext};
 use crate::renderer::RuntimeQuadRenderer;
 use crate::renderer::{self, GlyphCache, QuadRenderer, LoadGlyph};
 use crate::sync::FairMutex;
