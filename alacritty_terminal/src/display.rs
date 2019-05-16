@@ -30,6 +30,7 @@ use crate::message_bar::Message;
 use crate::meter::Meter;
 use crate::renderer::rects::{Rect, Rects};
 use crate::renderer::generic::{BaseRenderContext, DynamicRenderContext, Renderer, RenderContext};
+use crate::renderer::RuntimeQuadRenderer;
 use crate::renderer::{self, GlyphCache, QuadRenderer, LoadGlyph};
 use crate::sync::FairMutex;
 use crate::term::color::Rgb;
@@ -98,7 +99,7 @@ impl From<renderer::Error> for Error {
 /// The display wraps a window, font rasterizer, and GPU renderer
 pub struct Display {
     window: Window,
-    renderer: Box<dyn DynamicRenderContext>,
+    renderer: RuntimeQuadRenderer,
     glyph_cache: GlyphCache,
     render_timer: bool,
     rx: mpsc::Receiver<PhysicalSize>,
@@ -226,7 +227,7 @@ impl Display {
             api.clear(background_color);
         });
 
-        let renderer: Box<_> = Box::new(renderer);
+        let renderer = RuntimeQuadRenderer::Classic(renderer);
         Ok(Display {
             window,
             renderer,

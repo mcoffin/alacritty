@@ -24,6 +24,14 @@ pub trait RenderContext<'a>: BaseRenderContext {
     type Renderer: Renderer;
     type Loader: LoadGlyph;
 
+    fn borrow_api(
+        &'a mut self,
+        config: &'a Config,
+        props: &term::SizeInfo
+    ) -> Self::Renderer;
+
+    fn borrow_loader(&'a mut self) -> Self::Loader;
+
     fn with_api<'me, 'config, F, T>(
         &'me mut self,
         config: &'config Config,
@@ -32,14 +40,22 @@ pub trait RenderContext<'a>: BaseRenderContext {
     ) -> T where
         'me: 'a,
         'config: 'a,
-        F: FnOnce(Self::Renderer) -> T;
+        F: FnOnce(Self::Renderer) -> T,
+    {
+        let api = self.borrow_api(config, props);
+        func(api)
+    }
 
     fn with_loader<'me, F, T>(
         &'me mut self,
         func: F
     ) -> T where
         'me: 'a,
-        F: FnOnce(Self::Loader) -> T;
+        F: FnOnce(Self::Loader) -> T,
+    {
+        let api = self.borrow_loader();
+        func(api)
+    }
 }
 
 pub trait DynamicRenderContext: BaseRenderContext {

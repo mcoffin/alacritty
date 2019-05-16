@@ -37,6 +37,9 @@ use crate::term::{self, cell, RenderableCell, RenderableCellContent};
 
 pub mod rects;
 pub mod generic;
+mod runtime;
+
+pub use runtime::RuntimeQuadRenderer;
 
 // Shader paths for live reload
 static TEXT_SHADER_F_PATH: &'static str =
@@ -410,6 +413,21 @@ pub struct RenderApi<'a> {
     config: &'a Config,
 }
 
+impl<'a> Drop for RenderApi<'a> {
+    fn drop(&mut self) {
+        if !self.batch.is_empty() {
+            self.render_batch();
+        }
+        unsafe {
+            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, 0);
+            gl::BindBuffer(gl::ARRAY_BUFFER, 0);
+            gl::BindVertexArray(0);
+
+            gl::UseProgram(0);
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct LoaderApi<'a> {
     active_tex: &'a mut GLuint,
@@ -595,16 +613,11 @@ impl<'a> generic::RenderContext<'a> for QuadRenderer {
     type Renderer = RenderApi<'a>;
     type Loader = LoaderApi<'a>;
 
-    fn with_api<'me, 'config, F, T>(
-        &'me mut self,
-        config: &'config Config,
-        props: &term::SizeInfo,
-        func: F
-    ) -> T where
-        'me: 'a,
-        'config: 'a,
-        F: FnOnce(Self::Renderer) -> T,
-    {
+    fn borrow_api(
+        &'a mut self,
+        config: &'a Config,
+        props: &term::SizeInfo
+    ) -> Self::Renderer {
         // Flush message queue
         if let Ok(Msg::ShaderReload) = self.rx.try_recv() {
             self.reload_shaders(props);
@@ -621,42 +634,26 @@ impl<'a> generic::RenderContext<'a> for QuadRenderer {
             gl::ActiveTexture(gl::TEXTURE0);
         }
 
-        let res = func(RenderApi {
+        RenderApi {
             active_tex: &mut self.active_tex,
             batch: &mut self.batch,
             atlas: &mut self.atlas,
             current_atlas: &mut self.current_atlas,
             program: &mut self.program,
             config,
-        });
-
-        unsafe {
-            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, 0);
-            gl::BindBuffer(gl::ARRAY_BUFFER, 0);
-            gl::BindVertexArray(0);
-
-            gl::UseProgram(0);
         }
-
-        res
     }
 
-    fn with_loader<'me, F, T>(
-        &'me mut self,
-        func: F
-    ) -> T where
-        'me: 'a,
-        F: FnOnce(Self::Loader) -> T,
-    {
+    fn borrow_loader(&'a mut self) -> Self::Loader {
         unsafe {
             gl::ActiveTexture(gl::TEXTURE0);
         }
 
-        func(LoaderApi {
+        LoaderApi {
             active_tex: &mut self.active_tex,
             atlas: &mut self.atlas,
             current_atlas: &mut self.current_atlas,
-        })
+        }
     }
 }
 
@@ -1166,14 +1163,6 @@ impl<'a> LoadGlyph for RenderApi<'a> {
     }
 }
 
-impl<'a> Drop for RenderApi<'a> {
-    fn drop(&mut self) {
-        if !self.batch.is_empty() {
-            self.render_batch();
-        }
-    }
-}
-
 impl TextShaderProgram {
     pub fn new() -> Result<TextShaderProgram, ShaderCreationError> {
         let (vertex_src, fragment_src) = if cfg!(feature = "live-shader-reload") {
@@ -1312,14 +1301,6 @@ impl RectShaderProgram {
                 f32::from(color.b) / 255.,
                 alpha,
             );
-        }
-    }
-}
-
-impl Drop for RectShaderProgram {
-    fn drop(&mut self) {
-        unsafe {
-            gl::DeleteProgram(self.id);
         }
     }
 }
