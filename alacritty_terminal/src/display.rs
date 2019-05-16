@@ -29,7 +29,7 @@ use crate::index::Line;
 use crate::message_bar::Message;
 use crate::meter::Meter;
 use crate::renderer::rects::{Rect, Rects};
-use crate::renderer::generic::{BaseRenderContext, Renderer, RenderContext};
+use crate::renderer::generic::{BaseRenderContext, DynamicRenderContext, Renderer, RenderContext};
 use crate::renderer::{self, GlyphCache, QuadRenderer, LoadGlyph};
 use crate::sync::FairMutex;
 use crate::term::color::Rgb;
@@ -96,9 +96,9 @@ impl From<renderer::Error> for Error {
 }
 
 /// The display wraps a window, font rasterizer, and GPU renderer
-pub struct Display<R> where for<'a> R: RenderContext<'a> {
+pub struct Display {
     window: Window,
-    renderer: R,
+    renderer: Box<dyn DynamicRenderContext>,
     glyph_cache: GlyphCache,
     render_timer: bool,
     rx: mpsc::Receiver<PhysicalSize>,
@@ -123,11 +123,7 @@ impl Notifier {
     }
 }
 
-impl<R> Display<R> where
-    for<'a> R: RenderContext<'a>,
-    for<'a> <R as RenderContext<'a>>::Renderer: Renderer,
-    for<'a> <R as RenderContext<'a>>::Loader: LoadGlyph,
-{
+impl Display {
     pub fn notifier(&self) -> Notifier {
         Notifier(self.window.create_window_proxy())
     }
@@ -141,7 +137,7 @@ impl<R> Display<R> where
         &self.size_info
     }
 
-    pub fn new(config: &Config) -> Result<Display<QuadRenderer>, Error> {
+    pub fn new(config: &Config) -> Result<Display, Error> {
         // Extract some properties from config
         let render_timer = config.render_timer();
 
@@ -230,7 +226,8 @@ impl<R> Display<R> where
             api.clear(background_color);
         });
 
-        Ok(Display::<QuadRenderer> {
+        let renderer: Box<_> = Box::new(renderer);
+        Ok(Display {
             window,
             renderer,
             glyph_cache,
