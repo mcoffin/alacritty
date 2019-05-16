@@ -132,3 +132,27 @@ impl<'a> generic::RenderContext<'a> for RuntimeQuadRenderer {
         }
     }
 }
+
+impl generic::DynamicRenderContext for RuntimeQuadRenderer {
+    fn with_api_dynamic<F, T>(
+        &mut self,
+        config: &Config,
+        props: &term::SizeInfo,
+        func: F
+    ) -> T where
+        F: FnOnce(&mut dyn Renderer) -> T,
+    {
+        let mut api = self.borrow_api(config, props);
+        func(api.unwrap_mut())
+    }
+
+    fn with_loader_dynamic<F, T>(
+        &mut self,
+        func: F
+    ) -> T where
+        F: FnOnce(&mut dyn LoadGlyph) -> T,
+    {
+        let mut api = self.borrow_loader();
+        func(api.unwrap_mut())
+    }
+}

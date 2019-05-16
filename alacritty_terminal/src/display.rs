@@ -483,7 +483,7 @@ impl Display {
         // handling and rendering.
         drop(terminal);
 
-        self.renderer.with_api(config, &size_info, |api| {
+        self.renderer.with_api_dynamic(config, &size_info, |api| {
             api.clear(background_color);
         });
 
@@ -495,7 +495,7 @@ impl Display {
             {
                 let _sampler = self.meter.sampler();
 
-                self.renderer.with_api(config, &size_info, |mut api| {
+                self.renderer.with_api_dynamic(config, &size_info, |api| {
                     // Iterate over all non-empty cells in the grid
                     for cell in grid_cells {
                         // Update underline/strikeout
@@ -522,7 +522,7 @@ impl Display {
                 // Relay messages to the user
                 let mut offset = 1;
                 for message_text in text.iter().rev() {
-                    self.renderer.with_api(config, &size_info, |mut api| {
+                    self.renderer.with_api_dynamic(config, &size_info, |api| {
                         api.render_string(
                             &message_text,
                             Line(size_info.lines().saturating_sub(offset)),
@@ -541,7 +541,7 @@ impl Display {
             if self.render_timer {
                 let timing = format!("{:.3} usec", self.meter.average());
                 let color = Rgb { r: 0xd5, g: 0x4e, b: 0x53 };
-                self.renderer.with_api(config, &size_info, |mut api| {
+                self.renderer.with_api_dynamic(config, &size_info, |api| {
                     api.render_string(&timing[..], size_info.lines() - 2, glyph_cache, Some(color));
                 });
             }

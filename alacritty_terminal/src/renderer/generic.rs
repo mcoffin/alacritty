@@ -74,29 +74,29 @@ pub trait DynamicRenderContext: BaseRenderContext {
         F: FnOnce(&mut dyn LoadGlyph) -> T;
 }
 
-impl<R> DynamicRenderContext for R where
-    for<'a> R: RenderContext<'a>,
-{
-    fn with_api_dynamic<F, T>(
-        &mut self,
-        config: &Config,
-        props: &term::SizeInfo,
-        func: F
-    ) -> T where
-        F: FnOnce(&mut dyn Renderer) -> T,
-    {
-        self.with_api(config, props, |mut api| func(&mut api))
-    }
-
-    fn with_loader_dynamic<F, T>(
-        &mut self,
-        func: F
-    ) -> T where
-        F: FnOnce(&mut dyn LoadGlyph) -> T,
-    {
-        self.with_loader(|mut api| func(&mut api))
-    }
-}
+//impl<R> DynamicRenderContext for R where
+//    for<'a> R: RenderContext<'a>,
+//{
+//    fn with_api_dynamic<F, T>(
+//        &mut self,
+//        config: &Config,
+//        props: &term::SizeInfo,
+//        func: F
+//    ) -> T where
+//        F: FnOnce(&mut dyn Renderer) -> T,
+//    {
+//        self.with_api(config, props, |mut api| func(&mut api))
+//    }
+//
+//    fn with_loader_dynamic<F, T>(
+//        &mut self,
+//        func: F
+//    ) -> T where
+//        F: FnOnce(&mut dyn LoadGlyph) -> T,
+//    {
+//        self.with_loader(|mut api| func(&mut api))
+//    }
+//}
 
 //pub struct DynamicRenderer<R> {
 //    renderer: R
