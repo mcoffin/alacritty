@@ -11,5 +11,17 @@ lto = true
 debug = 1
 incremental = false
 
-[patch.crates-io]
-servo-freetype-sys = { path = "servo-freetype-proxy" }
+[patch.crates-io.servo-freetype-sys]
+path = "servo-freetype-proxy"
+
+[patch.crates-io.vulkano]
+git = "git://github.com/vulkano-rs/vulkano"
+path = "vulkano"
+
+[patch.crates-io.vulkano-win]
+git = "git://github.com/vulkano-rs/vulkano"
+path = "vulkano-win"
+
+[patch.crates-io.vulkano-shaders]
+git = "git://github.com/vulkano-rs/vulkano"
+path = "vulkano-shaders"

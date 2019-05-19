@@ -1,6 +1,7 @@
 use crate::term::RenderableCell;
 use crate::index::Line;
 use super::QuadRenderer;
+#[cfg(feature = "vulkan")]
 use crate::vk_renderer::VulkanQuadRenderer;
 use super::generic;
 use super::{LoadGlyph, GlyphCache};
@@ -15,6 +16,7 @@ use crate::renderer::Glyph;
 
 pub enum RuntimeRenderer<'a> {
     Classic(<QuadRenderer as RenderContext<'a>>::Renderer),
+    #[cfg(feature = "vulkan")]
     Vulkan(<VulkanQuadRenderer as RenderContext<'a>>::Renderer),
 }
 
@@ -23,6 +25,7 @@ impl<'a> RuntimeRenderer<'a> {
         use RuntimeRenderer::*;
         match self {
             &Classic(ref r) => r,
+            #[cfg(feature = "vulkan")]
             &Vulkan(ref r) => r,
         }
     }
@@ -30,6 +33,7 @@ impl<'a> RuntimeRenderer<'a> {
         use RuntimeRenderer::*;
         match self {
             &mut Classic(ref mut r) => r,
+            #[cfg(feature = "vulkan")]
             &mut Vulkan(ref mut r) => r,
         }
     }
@@ -57,6 +61,7 @@ impl<'a> Renderer for RuntimeRenderer<'a> {
 
 pub enum RuntimeLoader<'a> {
     Classic(<QuadRenderer as RenderContext<'a>>::Loader),
+    #[cfg(feature = "vulkan")]
     Vulkan(<VulkanQuadRenderer as RenderContext<'a>>::Loader),
 }
 
@@ -65,6 +70,7 @@ impl<'a> RuntimeLoader<'a> {
         use RuntimeLoader::*;
         match self {
             &mut Classic(ref mut r) => r,
+            #[cfg(feature = "vulkan")]
             &mut Vulkan(ref mut r) => r,
         }
     }
@@ -82,7 +88,19 @@ impl<'a> LoadGlyph for RuntimeLoader<'a> {
 
 pub enum RuntimeQuadRenderer {
     Classic(QuadRenderer),
+    #[cfg(feature = "vulkan")]
     Vulkan(VulkanQuadRenderer)
+}
+
+impl RuntimeQuadRenderer {
+    fn unwrap_base_mut(&mut self) -> &mut dyn BaseRenderContext {
+        use RuntimeQuadRenderer::*;
+        match self {
+            &mut Classic(ref mut r) => r,
+            #[cfg(feature = "vulkan")]
+            &mut Vulkan(ref mut r) => r,
+        }
+    }
 }
 
 impl generic::BaseRenderContext for RuntimeQuadRenderer {
@@ -90,6 +108,7 @@ impl generic::BaseRenderContext for RuntimeQuadRenderer {
         use RuntimeQuadRenderer::*;
         match self {
             &mut Classic(ref mut r) => r.resize(size, padding_x, padding_y),
+            #[cfg(feature = "vulkan")]
             &mut Vulkan(ref mut r) => r.resize(size, padding_x, padding_y)
         }
     }
@@ -101,12 +120,7 @@ impl generic::BaseRenderContext for RuntimeQuadRenderer {
         visual_bell_intensity: f64,
         cell_line_rects: Rects
     ) {
-        use RuntimeQuadRenderer::*;
-        let renderer_dyn: &mut dyn BaseRenderContext = match self {
-            &mut Classic(ref mut r) => r,
-            &mut Vulkan(ref mut r) => r,
-        };
-        renderer_dyn.draw_rects(config, props, visual_bell_intensity, cell_line_rects)
+        self.unwrap_base_mut().draw_rects(config, props, visual_bell_intensity, cell_line_rects)
     }
 }
 
@@ -121,6 +135,7 @@ impl<'a> generic::RenderContext<'a> for RuntimeQuadRenderer {
     ) -> Self::Renderer {
         match self {
             &mut RuntimeQuadRenderer::Classic(ref mut r) => RuntimeRenderer::Classic(r.borrow_api(config, props)),
+            #[cfg(feature = "vulkan")]
             &mut RuntimeQuadRenderer::Vulkan(ref mut r) => RuntimeRenderer::Vulkan(r.borrow_api(config, props)),
         }
     }
@@ -128,6 +143,7 @@ impl<'a> generic::RenderContext<'a> for RuntimeQuadRenderer {
     fn borrow_loader(&'a mut self) -> Self::Loader {
         match self {
             &mut RuntimeQuadRenderer::Classic(ref mut r) => RuntimeLoader::Classic(r.borrow_loader()),
+            #[cfg(feature = "vulkan")]
             &mut RuntimeQuadRenderer::Vulkan(ref mut r) => RuntimeLoader::Vulkan(r.borrow_loader())
         }
     }

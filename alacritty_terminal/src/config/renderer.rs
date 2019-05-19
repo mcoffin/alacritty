@@ -3,7 +3,7 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize, Copy, Clone, PartialEq, Eq)]
 pub enum RendererApi {
     Classic,
-    #[cfg(feature = "Vulkan")]
+    #[cfg(feature = "vulkan")]
     Vulkan
 }
 

@@ -35,6 +35,7 @@ default = []
 live-shader-reload = ["alacritty_terminal/live-shader-reload"]
 nightly = []
 bench = []
+vulkan = ["alacritty_terminal/vulkan"]
 
 [package.metadata.deb]
 maintainer = "Joe Wilm <joe@jwilm.com>"

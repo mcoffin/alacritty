@@ -17,14 +17,14 @@
 use std::f64;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 use std::ffi::c_void;
-use std::sync::mpsc;
+use std::sync::{ Arc, mpsc };
 use std::borrow::BorrowMut;
 
 use glutin::dpi::{PhysicalPosition, PhysicalSize};
 use glutin::EventsLoop;
 use parking_lot::MutexGuard;
 
-use crate::config::{Config, StartupMode};
+use crate::config::{Config, StartupMode, RendererApi};
 use crate::index::Line;
 use crate::message_bar::Message;
 use crate::meter::Meter;
@@ -35,8 +35,10 @@ use crate::renderer::{self, GlyphCache, QuadRenderer, LoadGlyph};
 use crate::sync::FairMutex;
 use crate::term::color::Rgb;
 use crate::term::{RenderableCell, SizeInfo, Term};
-use crate::window::{self, Window};
+use crate::window::{self, Window, VkInstance};
 use font::{self, Rasterize};
+#[cfg(feature = "vulkan")]
+use crate::vk_renderer;
 
 #[derive(Debug)]
 pub enum Error {
@@ -124,6 +126,24 @@ impl Notifier {
     }
 }
 
+fn create_renderer(
+    config: &Config,
+    maybe_vk: Option<VkInstance>
+) -> Result<RuntimeQuadRenderer, Error> {
+    match config.renderer_api() {
+        RendererApi::Classic => QuadRenderer::new()
+            .map(RuntimeQuadRenderer::Classic)
+            .map_err(From::from),
+        #[cfg(feature = "vulkan")]
+        RendererApi::Vulkan => {
+            let instance = maybe_vk.unwrap();
+            vk_renderer::VulkanQuadRenderer::new(instance)
+                .map(RuntimeQuadRenderer::Vulkan)
+                .map_err(|_| panic!("should not occur"))
+        },
+    }
+}
+
 impl Display {
     pub fn notifier(&self) -> Notifier {
         Notifier(self.window.create_window_proxy())
@@ -158,7 +178,7 @@ impl Display {
 
         // Create the window where Alacritty will be displayed
         let logical = dimensions.map(|d| PhysicalSize::new(d.0, d.1).to_logical(estimated_dpr));
-        let mut window = Window::new(event_loop, &config, logical)?;
+        let (mut window, mut maybe_vk) = Window::new(event_loop, &config, logical)?;
 
         let dpr = window.hidpi_factor();
         info!("Device pixel ratio: {}", dpr);
@@ -168,7 +188,7 @@ impl Display {
             window.inner_size_pixels().expect("glutin returns window size").to_physical(dpr);
 
         // Create renderer
-        let mut renderer = QuadRenderer::new()?;
+        let mut renderer = create_renderer(config, maybe_vk)?;
 
         let (glyph_cache, cell_width, cell_height) =
             Self::new_glyph_cache(dpr, &mut renderer, config)?;
@@ -227,7 +247,6 @@ impl Display {
             api.clear(background_color);
         });
 
-        let renderer = RuntimeQuadRenderer::Classic(renderer);
         Ok(Display {
             window,
             renderer,
@@ -270,11 +289,13 @@ impl Display {
         Some((width, height))
     }
 
-    fn new_glyph_cache(
+    fn new_glyph_cache<R>(
         dpr: f64,
-        renderer: &mut QuadRenderer,
+        renderer: &mut R,
         config: &Config,
-    ) -> Result<(GlyphCache, f32, f32), Error> {
+    ) -> Result<(GlyphCache, f32, f32), Error> where
+        for<'a> R: RenderContext<'a>,
+    {
         let font = config.font.clone();
         let rasterizer = font::Rasterizer::new(dpr as f32, config.font.use_thin_strokes())?;
 

@@ -11,10 +11,13 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+use std::borrow::Borrow;
 use std::convert::From;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 use std::ffi::c_void;
 use std::fmt::Display;
+use std::sync::{ Arc };
+use std::ops::Deref;
 
 use crate::gl;
 use glutin::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
@@ -30,8 +33,12 @@ use glutin::{
 };
 #[cfg(not(target_os = "macos"))]
 use image::ImageFormat;
+#[cfg(feature = "vulkan")]
+type VkSurface<W> = vulkano::swapchain::Surface<W>;
+#[cfg(feature = "vulkan")]
+use crate::vk_renderer;
 
-use crate::config::{Config, Decorations, StartupMode, WindowConfig};
+use crate::config::{Config, Decorations, StartupMode, WindowConfig, RendererApi};
 
 // It's required to be in this directory due to the `windows.rc` file
 #[cfg(not(target_os = "macos"))]
@@ -48,6 +55,14 @@ pub enum Error {
 
     /// Error manipulating the rendering context
     Context(glutin::ContextError),
+
+    /// Error creating the vulkan instance
+    #[cfg(feature = "vulkan")]
+    VulkanInstanceCreation(vk_renderer::VulkanInstanceCreationError),
+
+    /// Error creating the vulkan surface
+    #[cfg(feature = "vulkan")]
+    VulkanSurfaceCreation(vulkano_win::CreationError)
 }
 
 /// Result of fallible operations concerning a Window.
@@ -58,7 +73,7 @@ type Result<T> = ::std::result::Result<T, Error>;
 /// Wraps the underlying windowing library to provide a stable API in Alacritty
 pub struct Window {
     event_loop: EventsLoop,
-    windowed_context: glutin::WindowedContext<PossiblyCurrent>,
+    windowed_context: Box<dyn WindowContainer<glutin::Window>>,
     mouse_visible: bool,
 
     /// Whether or not the window is the focused window.
@@ -87,6 +102,10 @@ impl ::std::error::Error for Error {
         match *self {
             Error::ContextCreation(ref err) => Some(err),
             Error::Context(ref err) => Some(err),
+            #[cfg(feature = "vulkan")]
+            Error::VulkanInstanceCreation(ref err) => Some(err),
+            #[cfg(feature = "vulkan")]
+            Error::VulkanSurfaceCreation(ref err) => Some(err),
         }
     }
 
@@ -94,15 +113,24 @@ impl ::std::error::Error for Error {
         match *self {
             Error::ContextCreation(ref _err) => "Error creating gl context",
             Error::Context(ref _err) => "Error operating on render context",
+            #[cfg(feature = "vulkan")]
+            Error::VulkanInstanceCreation(..) => "Error creating vulkan context",
+            #[cfg(feature = "vulkan")]
+            Error::VulkanSurfaceCreation(..) => "Error creating vulkan surface",
         }
     }
 }
 
 impl Display for Error {
     fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        let description = std::error::Error::description(self);
         match *self {
             Error::ContextCreation(ref err) => write!(f, "Error creating GL context; {}", err),
             Error::Context(ref err) => write!(f, "Error operating on render context; {}", err),
+            #[cfg(feature = "vulkan")]
+            Error::VulkanInstanceCreation(ref err) => write!(f, "{}; {}", description, err),
+            #[cfg(feature = "vulkan")]
+            Error::VulkanSurfaceCreation(ref err) => write!(f, "{}; {}", description, err),
         }
     }
 }
@@ -119,15 +147,40 @@ impl From<glutin::ContextError> for Error {
     }
 }
 
+#[cfg(feature = "vulkan")]
+impl From<vk_renderer::VulkanInstanceCreationError> for Error {
+    fn from(val: vk_renderer::VulkanInstanceCreationError) -> Error {
+        Error::VulkanInstanceCreation(val)
+    }
+}
+
+trait WindowBuilderExt {
+    fn set_optional_dimensions(&mut self, dimensions: Option<LogicalSize>);
+}
+
+impl WindowBuilderExt for WindowBuilder {
+    fn set_optional_dimensions(&mut self, dimensions: Option<LogicalSize>) {
+        if dimensions.is_some() {
+            self.window.dimensions = dimensions;
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct WindowParams<'a> {
+    title: &'a str,
+    class: &'a str,
+    config: &'a WindowConfig
+}
+
 fn create_gl_window(
-    mut window: WindowBuilder,
     event_loop: &EventsLoop,
     srgb: bool,
     dimensions: Option<LogicalSize>,
+    params: WindowParams<'_>,
 ) -> Result<glutin::WindowedContext<PossiblyCurrent>> {
-    if let Some(dimensions) = dimensions {
-        window = window.with_dimensions(dimensions);
-    }
+    let mut window = Window::get_platform_window(params.title, params.class, params.config);
+    window.set_optional_dimensions(dimensions);
 
     let windowed_context = ContextBuilder::new()
         .with_srgb(srgb)
@@ -137,9 +190,33 @@ fn create_gl_window(
 
     // Make the context current so OpenGL operations can run
     let windowed_context = unsafe { windowed_context.make_current().map_err(|(_, e)| e)? };
+    gl::load_with(|s| windowed_context.get_proc_address(s) as *const _);
 
     Ok(windowed_context)
 }
+
+#[cfg(feature = "vulkan")]
+fn create_vk_window(
+    event_loop: &glutin::EventsLoop,
+    srgb: bool,
+    dimensions: Option<LogicalSize>,
+    params: WindowParams<'_>
+) -> Result<vk_renderer::VulkanInstance<glutin::Window>> {
+    let window_builder = {
+        let mut window_builder = params.get_platform_window_winit();
+        window_builder.set_optional_dimensions(dimensions);
+        window_builder
+    };
+
+    let instance = vk_renderer::VulkanInstance::new(true, false, event_loop, window_builder)
+        .map_err(From::from);
+    instance
+}
+
+#[cfg(feature = "vulkan")]
+pub type VkInstance = Arc<vk_renderer::VulkanInstance<glutin::Window>>;
+#[cfg(not(feature = "vulkan"))]
+pub type VkInstance = ();
 
 impl Window {
     /// Create a new window
@@ -149,14 +226,36 @@ impl Window {
         event_loop: EventsLoop,
         config: &Config,
         dimensions: Option<LogicalSize>,
-    ) -> Result<Window> {
+    ) -> Result<(Window, Option<VkInstance>)> {
         let title = config.window.title.as_ref().map_or(DEFAULT_NAME, |t| t);
         let class = config.window.class.as_ref().map_or(DEFAULT_NAME, |c| c);
 
-        let window_builder = Window::get_platform_window(title, class, &config.window);
-        let windowed_context =
-            create_gl_window(window_builder.clone(), &event_loop, false, dimensions)
-                .or_else(|_| create_gl_window(window_builder, &event_loop, true, dimensions))?;
+        let params = WindowParams {
+            title: title,
+            class: class,
+            config: &config.window,
+        };
+
+        #[cfg(feature = "vulkan")]
+        let event_loop = glutin::EventsLoop::new();
+
+        let mut instance_ret = None;
+
+        let windowed_context: Box<dyn WindowContainer<glutin::Window>> = match config.renderer_api() {
+            RendererApi::Classic => {
+                let ctx = create_gl_window(&event_loop, false, dimensions, params)
+                    .or_else(|_| create_gl_window(&event_loop, true, dimensions, params))?;
+                Box::new(ctx)
+            },
+            #[cfg(feature = "vulkan")]
+            RendererApi::Vulkan => {
+                use std::borrow::Borrow;
+                let instance = create_vk_window(&event_loop, true, dimensions, params)?;
+                let ctx = Arc::new(instance);
+                instance_ret = Some(ctx.clone());
+                Box::new(ctx)
+            }
+        };
         let window = windowed_context.window();
         window.show();
 
@@ -194,15 +293,12 @@ impl Window {
         // Text cursor
         window.set_cursor(MouseCursor::Text);
 
-        // Set OpenGL symbol loader. This call MUST be after window.make_current on windows.
-        gl::load_with(|symbol| windowed_context.get_proc_address(symbol) as *const _);
-
         let window =
             Window { event_loop, windowed_context, mouse_visible: true, is_focused: false };
 
         window.run_os_extensions();
 
-        Ok(window)
+        Ok((window, instance_ret))
     }
 
     /// Get some properties about the device
@@ -232,8 +328,8 @@ impl Window {
     }
 
     #[inline]
-    pub fn swap_buffers(&self) -> Result<()> {
-        self.windowed_context.swap_buffers().map_err(From::from)
+    pub fn swap_buffers(&mut self) -> Result<()> {
+        self.windowed_context.swap_buffers()
     }
 
     /// Poll for any available events
@@ -246,7 +342,7 @@ impl Window {
     }
 
     #[inline]
-    pub fn resize(&self, size: PhysicalSize) {
+    pub fn resize(&mut self, size: PhysicalSize) {
         self.windowed_context.resize(size);
     }
 
@@ -499,5 +595,102 @@ impl Proxy {
     /// be waiting on user input.
     pub fn wakeup_event_loop(&self) {
         self.inner.wakeup().unwrap();
+    }
+}
+
+trait WindowContainer<W> {
+    fn window(&self) -> &W;
+    fn resize(&self, size: PhysicalSize);
+    fn swap_buffers(&self) -> Result<()>;
+}
+
+/*
+#[cfg(feature = "vulkan")]
+impl<W, D> WindowContainer<W> for D where
+    D: Deref<Target=vk_renderer::VulkanInstance<W>>,
+{
+    fn window(&self) -> &W {
+        self.deref().surface().window()
+    }
+
+    fn resize(&self, size: PhysicalSize) {
+        unimplemented!()
+    }
+
+    fn swap_buffers(&self) -> Result<()> {
+        unimplemented!()
+    }
+}
+*/
+
+#[cfg(feature = "vulkan")]
+impl<W> WindowContainer<W> for vk_renderer::VulkanInstance<W> {
+    fn window(&self) -> &W {
+        self.surface().window()
+    }
+
+    fn resize(&self, size: PhysicalSize) {
+        unimplemented!()
+    }
+
+    fn swap_buffers(&self) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+impl<T, W> WindowContainer<W> for Arc<T> where
+    T: WindowContainer<W>,
+{
+    fn window(&self) -> &W {
+        self.deref().window()
+    }
+
+    fn resize(&self, size: PhysicalSize) {
+        self.deref().resize(size)
+    }
+
+    fn swap_buffers(&self) -> Result<()> {
+        self.deref().swap_buffers()
+    }
+}
+
+impl WindowContainer<glutin::Window> for glutin::WindowedContext<PossiblyCurrent> where {
+    #[inline]
+    fn window(&self) -> &glutin::Window {
+        glutin::WindowedContext::window(self)
+    }
+
+    #[inline]
+    fn resize(&self, size: PhysicalSize) {
+        glutin::WindowedContext::resize(self, size)
+    }
+
+    fn swap_buffers(&self) -> Result<()> {
+        glutin::WindowedContext::swap_buffers(self).map_err(From::from)
+    }
+}
+
+impl<'a> WindowParams<'a> {
+    fn get_platform_window_winit(&self) -> glutin::WindowBuilder {
+        use glutin::os::unix::WindowBuilderExt;
+
+        let decorations = match self.config.decorations {
+            Decorations::None => false,
+            _ => true,
+        };
+
+        let icon = glutin::Icon::from_bytes_with_format(WINDOW_ICON, ImageFormat::ICO);
+
+        glutin::WindowBuilder::new()
+            .with_title(self.title)
+            .with_visibility(false)
+            .with_transparency(true)
+            .with_decorations(decorations)
+            .with_maximized(self.config.startup_mode() == StartupMode::Maximized)
+            .with_window_icon(icon.ok())
+            // X11
+            .with_class(self.class.into(), DEFAULT_NAME.into())
+            // Wayland
+            .with_app_id(self.class.into())
     }
 }
