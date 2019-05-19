@@ -604,13 +604,12 @@ trait WindowContainer<W> {
     fn swap_buffers(&self) -> Result<()>;
 }
 
-/*
 #[cfg(feature = "vulkan")]
-impl<W, D> WindowContainer<W> for D where
-    D: Deref<Target=vk_renderer::VulkanInstance<W>>,
+impl<C, W> WindowContainer<W> for C where
+    C: AsRef<vk_renderer::VulkanInstance<W>>,
 {
     fn window(&self) -> &W {
-        self.deref().surface().window()
+        self.as_ref().surface().window()
     }
 
     fn resize(&self, size: PhysicalSize) {
@@ -619,38 +618,6 @@ impl<W, D> WindowContainer<W> for D where
 
     fn swap_buffers(&self) -> Result<()> {
         unimplemented!()
-    }
-}
-*/
-
-#[cfg(feature = "vulkan")]
-impl<W> WindowContainer<W> for vk_renderer::VulkanInstance<W> {
-    fn window(&self) -> &W {
-        self.surface().window()
-    }
-
-    fn resize(&self, size: PhysicalSize) {
-        unimplemented!()
-    }
-
-    fn swap_buffers(&self) -> Result<()> {
-        unimplemented!()
-    }
-}
-
-impl<T, W> WindowContainer<W> for Arc<T> where
-    T: WindowContainer<W>,
-{
-    fn window(&self) -> &W {
-        self.deref().window()
-    }
-
-    fn resize(&self, size: PhysicalSize) {
-        self.deref().resize(size)
-    }
-
-    fn swap_buffers(&self) -> Result<()> {
-        self.deref().swap_buffers()
     }
 }
 

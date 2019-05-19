@@ -137,7 +137,7 @@ fn create_renderer(
         #[cfg(feature = "vulkan")]
         RendererApi::Vulkan => {
             let instance = maybe_vk.unwrap();
-            vk_renderer::VulkanQuadRenderer::new(instance)
+            vk_renderer::VulkanQuadRenderer::new(&instance)
                 .map(RuntimeQuadRenderer::Vulkan)
                 .map_err(|_| panic!("should not occur"))
         },
