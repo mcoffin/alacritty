@@ -79,13 +79,13 @@ impl VulkanInstance<glutin::Window> {
                     error: true,
                     warning: true,
                     performance_warning: true,
-                    information: enable_verbose,
-                    debug: enable_verbose,
+                    information: true,
+                    debug: true,
                 };
                 let cb = if enable_debug {
                     DebugCallback::new(&instance, message_types, |msg| {
-                        let severity = msg.ty.printing_name().unwrap_or("unknown");
-                        println!("{}:{}: {}", severity, msg.layer_prefix, msg.description);
+                        let severity = msg.ty.log_level();
+                        log!(severity, "{}: {}", msg.layer_prefix, msg.description);
                     })
                         .map(Some)
                         .map_err(VulkanInstanceCreationError::DebugCallback)
@@ -206,6 +206,7 @@ impl VulkanQuadRenderer {
             .next() // TODO: choose the best solution, rather than the first
             .map(Ok)
             .unwrap_or(Err(VulkanInstanceCreationError::NoMatchingDevice))?;
+        debug!("Vulkan Device: {}", solution.physical_device.name());
         let (device, mut queues) = {
             use vulkano::device::Device;
             let extensions = DeviceExtensions {
@@ -344,9 +345,21 @@ impl<'a, W> generic::RenderContext<'a> for VkQuadRenderer<W> {
 
 trait MessageTypesExt {
     fn printing_name(&self) -> Option<&'static str>;
+    fn log_level(&self) -> log::Level;
 }
 
 impl MessageTypesExt for vulkano::instance::debug::MessageTypes {
+    fn log_level(&self) -> log::Level {
+        use vulkano::instance::debug::MessageTypes;
+        match self {
+            &MessageTypes { error: true, .. } => log::Level::Error,
+            &MessageTypes { warning: true, .. } => log::Level::Warn,
+            &MessageTypes { performance_warning: true, .. } => log::Level::Warn,
+            &MessageTypes { information: true, .. } => log::Level::Info,
+            &MessageTypes { debug: true, .. } => log::Level::Debug,
+            _ => log::Level::Trace,
+        }
+    }
     fn printing_name(&self) -> Option<&'static str> {
         use vulkano::instance::debug::MessageTypes;
         match self {
