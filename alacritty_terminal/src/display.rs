@@ -27,8 +27,9 @@ use crate::config::{Config, StartupMode};
 use crate::index::Line;
 use crate::message_bar::Message;
 use crate::meter::Meter;
+use crate::renderer::generic::{ LoaderApi, RenderApi, Renderer };
 use crate::renderer::rects::{Rect, Rects};
-use crate::renderer::{self, GlyphCache, QuadRenderer};
+use crate::renderer::{self, ConfigExt, GlyphCache, GlRenderer};
 use crate::sync::FairMutex;
 use crate::term::color::Rgb;
 use crate::term::{RenderableCell, SizeInfo, Term};
@@ -42,10 +43,9 @@ combination_err!(Error, {
 });
 
 /// The display wraps a window, font rasterizer, and GPU renderer
-pub struct Display {
+pub struct Display<R> {
     window: Window,
-    renderer: QuadRenderer,
-    glyph_cache: GlyphCache,
+    renderer: R,
     render_timer: bool,
     rx: mpsc::Receiver<PhysicalSize>,
     tx: mpsc::Sender<PhysicalSize>,
@@ -69,21 +69,8 @@ impl Notifier {
     }
 }
 
-impl Display {
-    pub fn notifier(&self) -> Notifier {
-        Notifier(self.window.create_window_proxy())
-    }
-
-    pub fn update_config(&mut self, config: &Config) {
-        self.render_timer = config.render_timer();
-    }
-
-    /// Get size info about the display
-    pub fn size(&self) -> &SizeInfo {
-        &self.size_info
-    }
-
-    pub fn new(config: &Config) -> Result<Display, Error> {
+impl Display<GlRenderer> {
+    pub fn new(config: &Config) -> Result<Self, Error> {
         // Extract some properties from config
         let render_timer = config.render_timer();
 
@@ -94,7 +81,7 @@ impl Display {
 
         // Guess the target window dimensions
         let metrics = GlyphCache::static_metrics(config, estimated_dpr as f32)?;
-        let (cell_width, cell_height) = Self::compute_cell_size(config, &metrics);
+        let (cell_width, cell_height) = config.cell_size(&metrics);
         let dimensions = Self::calculate_dimensions(config, estimated_dpr, cell_width, cell_height);
 
         debug!("Estimated DPR: {}", estimated_dpr);
@@ -113,10 +100,8 @@ impl Display {
             window.inner_size_pixels().expect("glutin returns window size").to_physical(dpr);
 
         // Create renderer
-        let mut renderer = QuadRenderer::new()?;
-
-        let (glyph_cache, cell_width, cell_height) =
-            Self::new_glyph_cache(dpr, &mut renderer, config)?;
+        let mut renderer = GlRenderer::new(config, dpr)?;
+        let (cell_width, cell_height) = renderer.cell_dimensions(config);
 
         let mut padding_x = f64::from(config.window.padding.x) * dpr;
         let mut padding_y = f64::from(config.window.padding.y) * dpr;
@@ -175,7 +160,6 @@ impl Display {
         Ok(Display {
             window,
             renderer,
-            glyph_cache,
             render_timer,
             tx,
             rx,
@@ -184,6 +168,23 @@ impl Display {
             size_info,
             last_message: None,
         })
+    }
+}
+
+impl<R> Display<R> where
+    for<'a> R: Renderer<'a>,
+{
+    pub fn notifier(&self) -> Notifier {
+        Notifier(self.window.create_window_proxy())
+    }
+
+    pub fn update_config(&mut self, config: &Config) {
+        self.render_timer = config.render_timer();
+    }
+
+    /// Get size info about the display
+    pub fn size(&self) -> &SizeInfo {
+        &self.size_info
     }
 
     fn calculate_dimensions(
@@ -214,58 +215,15 @@ impl Display {
         Some((width, height))
     }
 
-    fn new_glyph_cache(
-        dpr: f64,
-        renderer: &mut QuadRenderer,
-        config: &Config,
-    ) -> Result<(GlyphCache, f32, f32), Error> {
-        let font = config.font.clone();
-        let rasterizer = font::Rasterizer::new(dpr as f32, config.font.use_thin_strokes())?;
-
-        // Initialize glyph cache
-        let glyph_cache = {
-            info!("Initializing glyph cache...");
-            let init_start = ::std::time::Instant::now();
-
-            let cache =
-                renderer.with_loader(|mut api| GlyphCache::new(rasterizer, &font, &mut api))?;
-
-            let stop = init_start.elapsed();
-            let stop_f = stop.as_secs() as f64 + f64::from(stop.subsec_nanos()) / 1_000_000_000f64;
-            info!("... finished initializing glyph cache in {}s", stop_f);
-
-            cache
-        };
-
-        // Need font metrics to resize the window properly. This suggests to me the
-        // font metrics should be computed before creating the window in the first
-        // place so that a resize is not needed.
-        let (cw, ch) = Self::compute_cell_size(config, &glyph_cache.font_metrics());
-
-        Ok((glyph_cache, cw, ch))
-    }
-
-    pub fn update_glyph_cache(&mut self, config: &Config) {
-        let cache = &mut self.glyph_cache;
+    fn update_glyph_cache(&mut self, config: &Config) {
         let dpr = self.size_info.dpr;
         let size = self.font_size;
 
-        self.renderer.with_loader(|mut api| {
-            let _ = cache.update_font_size(&config.font, size, dpr, &mut api);
-        });
+        let _ = self.renderer.update_font_size(&config.font, size, dpr);
 
-        let (cw, ch) = Self::compute_cell_size(config, &cache.font_metrics());
+        let (cw, ch) = config.cell_size(&self.renderer.font_metrics());
         self.size_info.cell_width = cw;
         self.size_info.cell_height = ch;
-    }
-
-    fn compute_cell_size(config: &Config, metrics: &font::Metrics) -> (f32, f32) {
-        let offset_x = f64::from(config.font.offset.x);
-        let offset_y = f64::from(config.font.offset.y);
-        (
-            f32::max(1., ((metrics.average_advance + offset_x) as f32).floor()),
-            f32::max(1., ((metrics.line_height + offset_y) as f32).floor()),
-        )
     }
 
     #[inline]
@@ -388,7 +346,7 @@ impl Display {
         let size_info = *terminal.size_info();
         let visual_bell_intensity = terminal.visual_bell.intensity();
         let background_color = terminal.background_color();
-        let metrics = self.glyph_cache.font_metrics();
+        let metrics = self.renderer.font_metrics();
 
         let window_focused = self.window.is_focused;
         let grid_cells: Vec<RenderableCell> =
@@ -428,11 +386,11 @@ impl Display {
         drop(terminal);
 
         self.renderer.with_api(config, &size_info, |api| {
+            use crate::renderer::generic::LoaderApi;
             api.clear(background_color);
         });
 
         {
-            let glyph_cache = &mut self.glyph_cache;
             let mut rects = Rects::new(&metrics, &size_info);
 
             // Draw grid
@@ -446,7 +404,7 @@ impl Display {
                         rects.update_lines(&size_info, &cell);
 
                         // Draw the cell
-                        api.render_cell(cell, glyph_cache);
+                        api.render_cell(cell);
                     }
                 });
             }
@@ -470,7 +428,6 @@ impl Display {
                         api.render_string(
                             &message_text,
                             Line(size_info.lines().saturating_sub(offset)),
-                            glyph_cache,
                             None,
                         );
                     });
@@ -486,7 +443,7 @@ impl Display {
                 let timing = format!("{:.3} usec", self.meter.average());
                 let color = Rgb { r: 0xd5, g: 0x4e, b: 0x53 };
                 self.renderer.with_api(config, &size_info, |mut api| {
-                    api.render_string(&timing[..], size_info.lines() - 2, glyph_cache, Some(color));
+                    api.render_string(&timing[..], size_info.lines() - 2, Some(color));
                 });
             }
         }
