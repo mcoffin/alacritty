@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fs::File;
 use std::hash::BuildHasherDefault;
@@ -41,7 +41,7 @@ pub mod generic;
 
 pub struct GlRenderer {
     renderer: QuadRenderer,
-    glyph_cache: RefCell<GlyphCache>,
+    glyph_cache: GlyphCache,
 }
 
 impl GlRenderer {
@@ -50,7 +50,7 @@ impl GlRenderer {
         let glyph_cache = Self::new_glyph_cache(dpr, &mut renderer, config)?;
         Ok(GlRenderer {
             renderer: renderer,
-            glyph_cache: RefCell::from(glyph_cache),
+            glyph_cache: glyph_cache,
         })
     }
 
@@ -86,7 +86,7 @@ impl<'a> generic::Renderer<'a> for GlRenderer {
     type LoaderApi = LoaderApi<'a>;
 
     fn cell_dimensions(&self, config: &Config) -> (f32, f32) {
-        config.cell_size(&self.glyph_cache.borrow().font_metrics())
+        config.cell_size(&self.glyph_cache.font_metrics())
     }
 
     fn resize(&mut self, size: PhysicalSize, padding_x: f32, padding_y: f32) {
@@ -99,14 +99,17 @@ impl<'a> generic::Renderer<'a> for GlRenderer {
         size: font::Size,
         dpr: f64
     ) -> Result<(), font::Error> {
-        let mut glyph_cache = self.glyph_cache.borrow_mut();
-        let mut loader = self.borrow_loader();
-        glyph_cache.update_font_size(font, size, dpr, &mut loader)
+        let glyph_cache = &mut self.glyph_cache;
+        let ret = {
+            let mut loader = unsafe { self.renderer.borrow_loader() };
+            glyph_cache.update_font_size(font, size, dpr, &mut loader)
+        };
+        ret
     }
 
     #[inline]
     fn font_metrics(&self) -> font::Metrics {
-        self.glyph_cache.borrow().font_metrics()
+        self.glyph_cache.font_metrics()
     }
 
     #[inline]
@@ -120,7 +123,7 @@ impl<'a> generic::Renderer<'a> for GlRenderer {
         self.renderer.draw_rects(config, props, visual_bell_intensity, cell_line_rects)
     }
 
-    fn borrow_api(
+    unsafe fn borrow_api(
         &'a mut self,
         config: &'a Config,
         props: &'a term::SizeInfo
@@ -131,15 +134,13 @@ impl<'a> generic::Renderer<'a> for GlRenderer {
         }
         while let Ok(_) = self.renderer.rx.try_recv() {}
 
-        unsafe {
-            gl::UseProgram(self.renderer.program.id);
-            self.renderer.program.set_term_uniforms(props);
+        gl::UseProgram(self.renderer.program.id);
+        self.renderer.program.set_term_uniforms(props);
 
-            gl::BindVertexArray(self.renderer.vao);
-            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, self.renderer.ebo);
-            gl::BindBuffer(gl::ARRAY_BUFFER, self.renderer.vbo_instance);
-            gl::ActiveTexture(gl::TEXTURE0);
-        }
+        gl::BindVertexArray(self.renderer.vao);
+        gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, self.renderer.ebo);
+        gl::BindBuffer(gl::ARRAY_BUFFER, self.renderer.vbo_instance);
+        gl::ActiveTexture(gl::TEXTURE0);
 
         RenderApi {
             active_tex: &mut self.renderer.active_tex,
@@ -148,20 +149,33 @@ impl<'a> generic::Renderer<'a> for GlRenderer {
             current_atlas: &mut self.renderer.current_atlas,
             program: &mut self.renderer.program,
             config,
-            glyph_cache: self.glyph_cache.get_mut(),
+            glyph_cache: Cell::from(Some(&mut self.glyph_cache)),
         }
     }
 
-    fn borrow_loader(&'a mut self) -> Self::LoaderApi {
-        unsafe {
-            gl::ActiveTexture(gl::TEXTURE0);
-        }
+    #[inline]
+    unsafe fn borrow_loader(&'a mut self) -> Self::LoaderApi {
+        self.renderer.borrow_loader()
+    }
 
-        LoaderApi {
-            active_tex: &mut self.renderer.active_tex,
-            atlas: &mut self.renderer.atlas,
-            current_atlas: &mut self.renderer.current_atlas,
+    fn with_api<F, T>(
+        &'a mut self,
+        config: &'a Config,
+        props: &'a term::SizeInfo,
+        func: F
+    ) -> T where
+        F: FnOnce(Self::RenderApi) -> T,
+    {
+        let api = unsafe { self.borrow_api(config, props) };
+        let ret = func(api);
+        unsafe {
+            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, 0);
+            gl::BindBuffer(gl::ARRAY_BUFFER, 0);
+            gl::BindVertexArray(0);
+
+            gl::UseProgram(0);
         }
+        ret
     }
 }
 
@@ -503,7 +517,6 @@ pub struct QuadRenderer {
     rx: mpsc::Receiver<Msg>,
 }
 
-#[derive(Debug)]
 pub struct RenderApi<'a> {
     active_tex: &'a mut GLuint,
     batch: &'a mut Batch,
@@ -511,7 +524,7 @@ pub struct RenderApi<'a> {
     current_atlas: &'a mut usize,
     program: &'a mut TextShaderProgram,
     config: &'a Config,
-    glyph_cache: &'a mut GlyphCache,
+    glyph_cache: Cell<Option<&'a mut GlyphCache>>,
 }
 
 #[derive(Debug)]
@@ -780,6 +793,16 @@ impl QuadRenderer {
         renderer.atlas.push(atlas);
 
         Ok(renderer)
+    }
+
+    unsafe fn borrow_loader<'a>(&'a mut self) -> LoaderApi<'a> {
+        gl::ActiveTexture(gl::TEXTURE0);
+
+        LoaderApi {
+            active_tex: &mut self.active_tex,
+            atlas: &mut self.atlas,
+            current_atlas: &mut self.current_atlas,
+        }
     }
 
     // Draw all rectangles simultaneously to prevent excessive program swaps
@@ -1056,21 +1079,37 @@ impl<'a> RenderApi<'a> {
         }
     }
 
+    fn with_glyph_cache<F, T>(&self, func: F) -> Option<T> where
+        F: FnOnce(&mut GlyphCache) -> T,
+    {
+        let opt_tup = self.glyph_cache.take().map(|gc| {
+            let ret = func(gc);
+            (gc, ret)
+        });
+        match opt_tup {
+            Some((gc, ret)) => {
+                self.glyph_cache.set(Some(gc));
+                Some(ret)
+            },
+            None => None,
+        }
+    }
+
     pub fn render_cell(&mut self, cell: RenderableCell) {
         let chars = match cell.inner {
             RenderableCellContent::Cursor(cursor_key) => {
                 // Raw cell pixel buffers like cursors don't need to go through font lookup
-                let metrics = self.glyph_cache.metrics;
+                let glyph_cache = self.glyph_cache.take().unwrap();
+                let metrics = glyph_cache.metrics;
                 let glyph = {
                     let mut loader = LoaderApi {
                         active_tex: self.active_tex,
                         atlas: self.atlas,
                         current_atlas: self.current_atlas,
                     };
-                    self.glyph_cache.cursor_cache.entry(cursor_key).or_insert_with(|| {
-                        let offset_x = self.config.font.offset.x;
-                        let offset_y = self.config.font.offset.y;
-
+                    let offset_x = self.config.font.offset.x;
+                    let offset_y = self.config.font.offset.y;
+                    glyph_cache.cursor_cache.entry(cursor_key).or_insert_with(move || {
                         loader.load_glyph(&get_cursor_glyph(
                             cursor_key.style,
                             metrics,
@@ -1081,6 +1120,7 @@ impl<'a> RenderApi<'a> {
                     })
                 };
                 self.add_render_item(&cell, &glyph);
+                self.glyph_cache.get_mut().replace(glyph_cache);
                 return;
             },
             RenderableCellContent::Chars(chars) => chars,
@@ -1088,12 +1128,17 @@ impl<'a> RenderApi<'a> {
 
         // Get font key for cell
         // FIXME this is super inefficient.
-        let font_key = if cell.flags.contains(cell::Flags::BOLD) {
-            self.glyph_cache.bold_key
-        } else if cell.flags.contains(cell::Flags::ITALIC) {
-            self.glyph_cache.italic_key
-        } else {
-            self.glyph_cache.font_key
+        let font_key = {
+            let glyph_cache = self.glyph_cache.take().unwrap();
+            let fk = if cell.flags.contains(cell::Flags::BOLD) {
+                glyph_cache.bold_key
+            } else if cell.flags.contains(cell::Flags::ITALIC) {
+                glyph_cache.italic_key
+            } else {
+                glyph_cache.font_key
+            };
+            self.glyph_cache.get_mut().replace(glyph_cache);
+            fk
         };
 
         // Don't render text of HIDDEN cells
@@ -1108,29 +1153,35 @@ impl<'a> RenderApi<'a> {
             chars[0] = ' ';
         }
 
-        let mut glyph_key = GlyphKey { font_key, size: self.glyph_cache.font_size, c: chars[0] };
+        let font_size = self.with_glyph_cache(|gc| gc.font_size).unwrap();
+        let mut glyph_key = GlyphKey { font_key, size: font_size, c: chars[0] };
 
         // Add cell to batch
+        let glyph_cache = self.glyph_cache.take().unwrap();
         let glyph = {
             let mut loader = LoaderApi {
                 active_tex: self.active_tex,
                 atlas: self.atlas,
                 current_atlas: self.current_atlas
             };
-            self.glyph_cache.get(glyph_key, &mut loader)
+            glyph_cache.get(glyph_key, &mut loader)
         };
         self.add_render_item(&cell, glyph);
+        self.glyph_cache.get_mut().replace(glyph_cache);
 
         // Render zero-width characters
         for c in (&chars[1..]).iter().filter(|c| **c != ' ') {
             glyph_key.c = *c;
             let mut glyph = {
+                let glyph_cache = self.glyph_cache.take().unwrap();
                 let mut loader_api = LoaderApi {
                     active_tex: self.active_tex,
                     atlas: self.atlas,
                     current_atlas: self.current_atlas
                 };
-                *self.glyph_cache.get(glyph_key, &mut loader_api)
+                let ret = *glyph_cache.get(glyph_key, &mut loader_api);
+                self.glyph_cache.get_mut().replace(glyph_cache);
+                ret
             };
 
             // The metrics of zero-width characters are based on rendering
@@ -1138,7 +1189,7 @@ impl<'a> RenderApi<'a> {
             // right side of the preceding character. Since we render the
             // zero-width characters inside the preceding character, the
             // anchor has been moved to the right by one cell.
-            glyph.left += self.glyph_cache.metrics.average_advance as f32;
+            glyph.left += self.with_glyph_cache(|gc| gc.metrics.average_advance).unwrap() as f32;
 
             self.add_render_item(&cell, &glyph);
         }
@@ -1252,14 +1303,6 @@ impl<'a> Drop for RenderApi<'a> {
     fn drop(&mut self) {
         if !self.batch.is_empty() {
             self.render_batch();
-        }
-
-        unsafe {
-            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, 0);
-            gl::BindBuffer(gl::ARRAY_BUFFER, 0);
-            gl::BindVertexArray(0);
-
-            gl::UseProgram(0);
         }
     }
 }

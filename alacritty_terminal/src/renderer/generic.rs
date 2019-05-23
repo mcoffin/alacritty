@@ -50,13 +50,13 @@ pub trait Renderer<'a> {
         cell_line_rects: Rects
     );
 
-    fn borrow_api(
+    unsafe fn borrow_api(
         &'a mut self,
         config: &'a Config,
         props: &'a term::SizeInfo
     ) -> Self::RenderApi;
 
-    fn borrow_loader(&'a mut self) -> Self::LoaderApi;
+    unsafe fn borrow_loader(&'a mut self) -> Self::LoaderApi;
 
     fn with_api<F, T>(
         &'a mut self,
@@ -66,7 +66,7 @@ pub trait Renderer<'a> {
     ) -> T where
         F: FnOnce(Self::RenderApi) -> T,
     {
-        let api = self.borrow_api(config, props);
+        let api = unsafe { self.borrow_api(config, props) };
         func(api)
     }
 
@@ -76,7 +76,7 @@ pub trait Renderer<'a> {
     ) -> T where
         F: FnOnce(Self::LoaderApi) -> T,
     {
-        let loader = self.borrow_loader();
+        let loader = unsafe { self.borrow_loader() };
         func(loader)
     }
 }
